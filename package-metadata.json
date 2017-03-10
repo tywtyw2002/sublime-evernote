@@ -1,0 +1,1 @@
+{"url": "https://github.com/bordaigorl/sublime-evernote", "description": "Open and Save Evernote notes from Sublime Text 3 using Markdown", "sublime_text": ">=3000", "dependencies": [], "platforms": ["*"], "version": "2.7.2"}

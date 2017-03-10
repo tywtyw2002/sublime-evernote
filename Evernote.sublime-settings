@@ -32,5 +32,6 @@
     "show_stacks": true,
     "open_single_result": true,
     "tab_prefix": "Evernote: ",
+    "default_note_format": "MD",
     "warn_on_close": true
 }

@@ -1,6 +1,8 @@
 [
     { "command": "send_to_evernote", "caption": "Evernote: Send to Evernote as new note" },
     { "command": "send_to_evernote", "args": {"clip": true}, "caption": "Evernote: Clip to Evernote as new note" },
+    { "command": "set_note_format", "args": {"format": "MD"}, "caption": "Evernote: Set current note format to Markdown" },
+    { "command": "set_note_format", "args": {"format": "RST"}, "caption": "Evernote: Set current note format to reStructuredText" },
     { "command": "open_evernote_note", "caption": "Evernote: Open Evernote Note" },
     { "command": "view_in_evernote_webapp", "caption": "Evernote: View Note in Web App" },
     { "command": "view_in_evernote_client", "caption": "Evernote: View Note in Evernote client" },

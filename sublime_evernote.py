@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import re
+import traceback
 
 try:
     import ssl
@@ -41,12 +42,20 @@ from datetime import datetime
 
 from base64 import b64encode, b64decode
 
+import rst_render
+
+
+
 EVERNOTE_PLUGIN_VERSION = "2.7.2"
 USER_AGENT = {'User-Agent': 'SublimeEvernote/' + EVERNOTE_PLUGIN_VERSION}
 
 EVERNOTE_SETTINGS = "Evernote.sublime-settings"
 SUBLIME_EVERNOTE_COMMENT_BEG = "<!-- Sublime:"
 SUBLIME_EVERNOTE_COMMENT_END = "-->"
+
+SUBLIME_EVERNOTE_FORMAT_BEG = "<note-format>"
+SUBLIME_EVERNOTE_FORMAT_END = "</note-format>"
+
 
 DEBUG = False
 
@@ -189,6 +198,7 @@ def err_reason(err):
 
 
 def explain_error(err):
+    print(traceback.format_exc())
     if isinstance(err, EDAMUserException):
         printError("Evernote error: [%s]\n\t%s" % (errcode2name(err), err.parameter))
         if err.errorCode in error_groups["contents"][1]:
@@ -339,11 +349,30 @@ class EvernoteDo():
                 if not css[tag].endswith(";"):
                     css[tag] = css[tag] + ";"
             EvernoteDo.MD_EXTRAS['inline-css'] = css
+        #md or rst
+        self.note_format = self.settings.get("default_note_format", "MD")
+        #view.settings.set("note_format", self.note_format)
         self.md_syntax = self.settings.get("md_syntax")
         if not self.md_syntax:
             self.md_syntax = find_syntax("Evernote")
+        #rst format syntax
+        if self.note_format == "RST":
+            self.md_syntax = find_syntax("reStructuredText Improved")
         html2text.UL_ITEM_MARK = self.settings.get('item_mark', html2text.UL_ITEM_MARK)
         html2text.STRONG_MARK = self.settings.get('strong_mark', html2text.STRONG_MARK)
+
+    def set_syntax(self, format, view=None):
+        if format == "RST":
+            syntax = find_syntax("reStructuredText Improved")
+        elif format == "MD":
+            syntax = find_syntax("Evernote")
+        else:
+            syntax = self.md_syntax
+
+        if view is None:
+            self.view.set_syntax_file(syntax)
+        else:
+            view.set_syntax_file(syntax)
 
     def message(self, msg):
         sublime.status_message(msg)
@@ -487,6 +516,10 @@ class EvernoteDo():
     def populate_note(self, note, contents):
         if isinstance(contents, sublime.View):
             contents = contents.substr(sublime.Region(0, contents.size()))
+
+        metadata = extract_metadata(contents)
+        meta = metadata['metadata']
+
         body = markdown2.markdown(contents, extras=EvernoteDo.MD_EXTRAS)
 
         wrapper_style = ''
@@ -494,25 +527,40 @@ class EvernoteDo():
             if 'body' in EvernoteDo.MD_EXTRAS['inline-css']:
                 wrapper_style = EvernoteDo.MD_EXTRAS['inline-css']['body']
 
-        meta = body.metadata or {}
+        # meta = body.metadata or {}
         content = '<?xml version="1.0" encoding="UTF-8"?>'
         content += '<!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd">'
         content += '<en-note style="%s">' % wrapper_style
-        hidden = ('\n%s%s%s\n' %
-                    (SUBLIME_EVERNOTE_COMMENT_BEG,
-                     b64encode(contents.encode('utf8')).decode('utf8'),
-                     SUBLIME_EVERNOTE_COMMENT_END))
+        note_format = ("%s%s%s" %
+                (SUBLIME_EVERNOTE_FORMAT_BEG,
+                 self.view.settings().get("$evernote_format"),
+                 SUBLIME_EVERNOTE_FORMAT_END))
+
+        hidden = ('\n%s%s%s%s\n' %
+                (SUBLIME_EVERNOTE_COMMENT_BEG,
+                 note_format,
+                 b64encode(contents.encode('utf8')).decode('utf8'),
+                 SUBLIME_EVERNOTE_COMMENT_END))
         content += hidden
-        content += body
-        LOG(body)
+        if self.view.settings().get("$evernote_format", "MD") == "RST":
+            content += rst_render.render(metadata['contents'])
+            # content += "<span>RST render not support yet!</span>"
+        else:
+            content += body
         content += '</en-note>'
+        LOG(content)
         note.title = meta.get("title", note.title)
         tags = meta.get("tags", note.tagNames)
         if tags is not None:
             tags = extractTags(tags)
         LOG(tags)
+        LOG(meta)
         note.tagNames = tags
         note.content = content
+
+        if self.view.settings().get("$evernote_format", "MD") == "RST":
+            attr = Types.NoteAttributes(contentClass='us.c70.wiki.rst')
+            note.attributes = attr
         if "notebook" in meta:
             notebooks = self.get_notebooks()
             for nb in notebooks:
@@ -567,6 +615,17 @@ class EvernoteDoWindow(EvernoteDo, sublime_plugin.WindowCommand):
                 self.do_run(**kwargs)
         except Exception as e:
             sublime.error_message('Evernote error:\n%s' % explain_error(e))
+
+
+class SetNoteFormatCommand(EvernoteDoText):
+
+    def do_run(self, edit, **kwargs):
+        format = kwargs.get("format")
+        self.view.settings().set("$evernote_format", format)
+        self.set_syntax(format)
+
+    def is_visible(self, **args):
+        return (args.get("format") != self.view.settings().get('$evernote_format'))
 
 
 class SendToEvernoteCommand(EvernoteDoText):
@@ -713,7 +772,7 @@ class SaveEvernoteNoteCommand(EvernoteDoText):
         self.populate_note(note, self.view)
 
         self.message("Updating note, please wait...")
-
+        print('ee')
         def __update_note():
             try:
                 cnote = noteStore.updateNote(self.token(), note)
@@ -721,6 +780,7 @@ class SaveEvernoteNoteCommand(EvernoteDoText):
                 self.message("Successfully updated note: guid:%s" % cnote.guid)
                 self.update_status_info(cnote)
             except Exception as e:
+                LOG(e)
                 if sublime.ok_cancel_dialog('Evernote complained:\n\n%s\n\nRetry?' % explain_error(e)):
                     self.connect(self.__update_note)
 
@@ -871,6 +931,7 @@ class OpenEvernoteNoteCommand(EvernoteDoWindow):
             if convert:
                 # tags = [noteStore.getTag(self.token(), guid).name for guid in (note.tagGuids or [])]
                 # tags = [self.tag_from_guid(guid) for guid in (note.tagGuids or [])]
+                format = "MD"  # MD as default format when format not set!
                 tags = noteStore.getNoteTagNames(self.token(), note.guid)
                 meta = metadata_header(note.title, tags, nb_name)
                 body_start = note.content.find('<en-note')
@@ -883,6 +944,13 @@ class OpenEvernoteNoteCommand(EvernoteDoWindow):
                     try:
                         builtin_end = note.content.find(SUBLIME_EVERNOTE_COMMENT_END, builtin)
                         bmdtxt = note.content[builtin+len(SUBLIME_EVERNOTE_COMMENT_BEG):builtin_end]
+                        #extra note format  13 is len(SUBLIME_EVERNOTE_FORMAT_BEG)
+                        if bmdtxt[:13] == SUBLIME_EVERNOTE_FORMAT_BEG:
+                            end = bmdtxt.find(SUBLIME_EVERNOTE_FORMAT_END)
+                            format = bmdtxt[13:end]
+                            bmdtxt = bmdtxt[end+len(SUBLIME_EVERNOTE_FORMAT_END):]
+                            #print(bmdtxt)
+
                         mdtxt = b64decode(bmdtxt.encode('utf8')).decode('utf8')
                         parts = extract_metadata(mdtxt)
                         if parts["metadata"]:
@@ -898,6 +966,7 @@ class OpenEvernoteNoteCommand(EvernoteDoWindow):
                     except Exception as e:
                         mdtxt = ""
                         LOG("Loading from built-in comment failed", e)
+                        explain_error(e)
                 if builtin < 0 or mdtxt == "":
                     try:
                         mdtxt = html2text.html2text(note.content)
@@ -906,18 +975,22 @@ class OpenEvernoteNoteCommand(EvernoteDoWindow):
                         mdtxt = note.content
                         LOG("Conversion failed", e)
 
-                if unk_args.get('open_new_file', True) == False:
+                if not unk_args.get('open_new_file', True):
                     newview = self.window.active_view()
                 else:
                     newview = self.window.new_file()
                 set_view_metadata(newview, note, False)
-                syntax = self.md_syntax
+                # newview.settings().set("$evernote_format", self.note_format)
+                newview.settings().set("$evernote_format", format)
+                # syntax = self.md_syntax
                 note_contents = meta+mdtxt
+                # newview.set_syntax_file(syntax)
+                self.set_syntax(format, newview)
             else:
                 newview = self.window.new_file()
                 syntax = find_syntax("XML")
                 note_contents = note.content
-            newview.set_syntax_file(syntax)
+                newview.set_syntax_file(syntax)
             newview.set_scratch(True)
             replace_view_text(newview, note_contents)
             self.message('Note "%s" opened!' % note.title)
@@ -1363,6 +1436,7 @@ class NewEvernoteNoteCommand(EvernoteDo, sublime_plugin.WindowCommand):
         view = self.window.new_file()
         view.set_syntax_file(self.md_syntax)
         view.settings().set("$evernote", True)
+        view.settings().set("$evernote_format", self.note_format)
         view.set_status("Evernote-info", "Send to evernote to save your edits")
         view.set_scratch(True)
         view.set_name(self.settings.get("tab_prefix", "") + "Unsaved note")
